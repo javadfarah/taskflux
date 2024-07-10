@@ -4,7 +4,7 @@ import inspect
 import os
 from types import FunctionType
 from handlers.interface import HandlerInterface
-from utils.functions._import import import_from_string
+from utils.functions import import_from_string
 
 
 class Task:
