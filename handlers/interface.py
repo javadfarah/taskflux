@@ -9,3 +9,8 @@ class HandlerInterface(ABC):
     @abstractmethod
     def get(self, *args, **kwargs):
         pass
+
+    @staticmethod
+    @abstractmethod
+    def handler_inputs(*args, **kwargs):
+        pass

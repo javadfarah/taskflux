@@ -19,6 +19,7 @@ class Config(BaseSettings):
     DEBUG: bool = os.getenv('DEBUG', False)
     BROKER_URL: str = os.getenv('BROKER_URL')
     BROKER_TYPE: str = os.getenv('BROKER_TYPE')
+    HANDLER: str = os.getenv('HANDLER')
 
     @field_validator('*', mode='before')
     @classmethod

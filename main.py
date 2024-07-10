@@ -1,20 +1,14 @@
-
 from dispatchers import task_dispatcher
-from handlers.kafka_handler import KafkaHandler
-
-
-
-
+from config import env_config
 
 # Kafka broker configuration
-conf = {
-    'bootstrap.servers': 'kafka-0.kafka-headless.python.svc.trader-stage.charisma.tech:30121,kafka-1.kafka-headless.python.svc.trader-stage.charisma.tech:30122,kafka-2.kafka-headless.python.svc.trader-stage.charisma.tech:30123',
-}
-handler = KafkaHandler(config=conf, topic_name="task_flux_compacted")
+handler = env_config.HANDLER
+handler_config = handler.handler_inputs()
+task_flux = handler(**handler_config)
 
 
 # Usage example with a regular function
-@task_dispatcher(handler)
+@task_dispatcher()
 def a(arg):
     print(arg)
     print("abbas")
@@ -29,7 +23,7 @@ def a(arg):
 
 # Example with a static method
 class MyClass:
-    @task_dispatcher(handler)
+    @task_dispatcher()
     @staticmethod
     def b(arg):
         print(arg)
@@ -45,7 +39,7 @@ class MyClass:
 
 
 # Update data example
-@task_dispatcher(handler)
+@task_dispatcher()
 def update_data(key, new_data):
     print(f"Updating key {key} with data: {new_data}")
 

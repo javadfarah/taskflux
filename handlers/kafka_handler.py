@@ -4,14 +4,13 @@ import uuid
 
 from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient, NewTopic
-
 from handlers.interface import HandlerInterface
 
 
 class KafkaHandler(HandlerInterface):
     def __init__(self, config, topic_name):
         self.config = config
-        self.topic_name = topic_name
+        self.topic_name = f"task_flux_{topic_name}"
         self._create_topic_if_not_exists()
 
     def _create_topic_if_not_exists(self):
@@ -68,3 +67,11 @@ class KafkaHandler(HandlerInterface):
 
     def get(self, *args, **kwargs):
         pass
+
+    @staticmethod
+    def handler_inputs(broker_url: str, queue_name: str):
+        conf = {
+            'bootstrap.servers': broker_url,
+        }
+        inputs = dict(config=conf, topic_name=queue_name)
+        return inputs
