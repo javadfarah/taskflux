@@ -36,7 +36,10 @@ class Task:
         return key
 
     @staticmethod
-    def run_task(task_path: str, args: list, kwargs: dict):
+    def run_task(task_data: dict):
+        task_path = task_data.get("task_path")
+        args = task_data.get("args")
+        kwargs = task_data.get("kwargs")
         task = import_from_string(task_path)
         task.run(*args, **kwargs)
 

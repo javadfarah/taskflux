@@ -1,17 +1,26 @@
 import json
 import sys
 import uuid
-
 from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient, NewTopic
 from handlers.interface import HandlerInterface
+from task import Task
 
 
 class KafkaHandler(HandlerInterface):
+
     def __init__(self, config, topic_name):
         self.config = config
-        self.topic_name = f"task_flux_{topic_name}"
+        self.queue_name = topic_name
+        self.topic_name = "task_flux_compacted"
         self._create_topic_if_not_exists()
+        self.worker_id = str(uuid.uuid4())
+
+    def __del__(self):
+        self.cleanup()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.cleanup()
 
     def _create_topic_if_not_exists(self):
         admin_client = AdminClient(self.config)
@@ -32,15 +41,28 @@ class KafkaHandler(HandlerInterface):
         producer.produce(topic=self.topic_name, value=task_data, key=str(key))
         producer.flush()
 
-    def get_latest(self, key):
+    def update_message(self, message: dict, data: dict, key: str):
+        message = message | data
+        message = json.dumps(message, indent=2).encode('utf-8')
+        self.send(task_data=message, key=key)
+
+    def change_message_status(self, message: dict, status: str, key: str):
+        data = dict(status=status)
+        self.update_message(message=message, data=data, key=key)
+
+    def prepare_run_task(self, message: dict, key: str):
+        self.update_message(message=message, data={'worker_id': self.worker_id, "status": "started"}, key=key)
+
+    def get_latest(self):
         consumer_conf = self.config.copy()
         consumer_conf.update({
-            'group.id': uuid.uuid4(),
-            'auto.offset.reset': 'earliest'
+            'group.id': self.queue_name,
+            'auto.offset.reset': 'earliest',
+            'enable.auto.commit': False  # Disable auto commit
         })
         consumer = Consumer(consumer_conf)
         consumer.subscribe([self.topic_name])
-
+        consumer_id = consumer.memberid()
         while True:
             msg = consumer.poll(timeout=1.0)
             if msg is None:
@@ -54,9 +76,14 @@ class KafkaHandler(HandlerInterface):
                 elif msg.error():
                     raise KafkaException(msg.error())
             else:
-                return json.loads(msg.value())
+                message = json.loads(msg.value())
+                message_key = msg.key()
+                self.prepare_run_task(message=message, key=message_key)
+                # Task.run_task(message)
+                break
 
         consumer.close()
+        self.cleanup()
 
     def _get_config(self):
         return self.config
@@ -68,8 +95,13 @@ class KafkaHandler(HandlerInterface):
     def get(self, *args, **kwargs):
         pass
 
+    def cleanup(self):
+        print("cleanup")
+        # admin_client = AdminClient(self.config)
+        # admin_client.delete_consumer_groups([self.group_id])
+
     @staticmethod
-    def handler_inputs(broker_url: str, queue_name: str):
+    def handler_inputs(broker_url: str, queue_name: str = "default"):
         conf = {
             'bootstrap.servers': broker_url,
         }

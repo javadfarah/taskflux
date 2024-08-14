@@ -30,7 +30,7 @@ class Config(BaseSettings):
 
     class Config:
         case_sensitive = False
-        BASE_DIR = Path(__file__).resolve().parent.parent.parent
+        BASE_DIR = Path(__file__).resolve().parent
         env_file = (str(BASE_DIR) + "/.env").replace("//", "/")
         logger.info(env_file)
         env_file_encoding = "utf-8"
