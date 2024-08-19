@@ -7,9 +7,24 @@ from abc import ABC, abstractmethod
 from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient, NewTopic
 from handlers.interface import HandlerInterface
+from config import env_config
 
 
-class KafkaFactory:
+class FactorySchema(ABC):
+    @abstractmethod
+    def create_producer(self, *args, **kwargs):
+        ...
+
+    @abstractmethod
+    def create_consumer(self, *args, **kwargs):
+        ...
+
+    @abstractmethod
+    def _get_config(self, *args, **kwargs):
+        ...
+
+
+class KafkaFactory(FactorySchema):
     """
     Factory class to create Kafka Producers and Consumers.
 
@@ -18,8 +33,10 @@ class KafkaFactory:
         create_consumer(config, group_id): Creates a Kafka consumer with the given configuration and group ID.
     """
 
-    @staticmethod
-    def create_producer(config: dict):
+    def __init__(self):
+        self.producer = self.create_producer()
+
+    def create_producer(self):
         """
         Creates a Kafka producer instance.
 
@@ -29,27 +46,21 @@ class KafkaFactory:
         Returns:
             Producer: A Kafka producer instance.
         """
-        return Producer(config)
+        return KafkaProducerManager(config=self._get_config())
 
-    @staticmethod
-    def create_consumer(config, group_id):
-        """
-        Creates a Kafka consumer instance.
-
-        Args:
-            config (dict): Configuration for the Kafka consumer.
-            group_id (str): The group ID for the Kafka consumer.
-
-        Returns:
-            Consumer: A Kafka consumer instance.
-        """
+    def create_consumer(self, config, group_id):
         conf = config.copy()
         conf.update({
             'group.id': group_id,
             'auto.offset.reset': 'earliest',
             'enable.auto.commit': False
         })
-        return Consumer(conf)
+        return KafkaWorker(config=self._get_config())
+
+    @staticmethod
+    def _get_config(broker_url: env_config.BROKER_URL):
+        config = {'bootstrap.servers': broker_url}
+        return config
 
 
 class KafkaTopicManager:
@@ -104,6 +115,20 @@ class KafkaTopicManager:
                 print(f"Failed to create topic '{topic}': {e}")
 
 
+class KafkaConsumerManager:
+    def __init__(self, topic_name, config):
+        """
+        Initializes the KafkaProducerManager with a producer and topic name.
+
+        Args:
+            producer (Producer): The Kafka producer instance.
+            topic_name (str): The name of the Kafka topic."""
+
+        producer = KafkaFactory.create_producer(config)
+        self.producer = producer
+        self.topic_name = topic_name
+
+
 class KafkaProducerManager:
     """
     Responsible for managing Kafka producer tasks.
@@ -113,7 +138,7 @@ class KafkaProducerManager:
         update_message(message, data, key): Updates an existing message with new data and sends it.
     """
 
-    def __init__(self, producer, topic_name):
+    def __init__(self, topic_name, config):
         """
         Initializes the KafkaProducerManager with a producer and topic name.
 
@@ -121,6 +146,11 @@ class KafkaProducerManager:
             producer (Producer): The Kafka producer instance.
             topic_name (str): The name of the Kafka topic.
         """
+        topic_manager = KafkaTopicManager(config)
+        topic_manager.create_topic_if_not_exists(topic_name)
+        topic_manager.create_topic_if_not_exists(heartbeat_topic_name)
+
+        producer = KafkaFactory.create_producer(config)
         self.producer = producer
         self.topic_name = topic_name
 
@@ -151,110 +181,6 @@ class KafkaProducerManager:
         updated_message = {**message, **data}
         serialized_message = json.dumps(updated_message, indent=2).encode('utf-8')
         self.send(data=serialized_message, key=key)
-
-
-class TaskHandler(ABC):
-    """
-    Abstract class for task handling.
-
-    Methods:
-        process_task(): Processes a task.
-        change_message_status(message, status, key): Changes the status of a message.
-        prepare_run_task(message, key): Prepares a message for task execution.
-    """
-
-    def __init__(self, producer_manager):
-        """
-        Initializes the TaskHandler with a producer manager.
-
-        Args:
-            producer_manager (KafkaProducerManager): The manager for handling Kafka producer tasks.
-        """
-        self.producer_manager = producer_manager
-        self.worker_id = str(uuid.uuid4())
-
-    @abstractmethod
-    def process_task(self, message: dict, key: str):
-        """
-        Abstract method for processing a task.
-
-        Args:
-            message (dict): The message to process.
-            key (str): The key associated with the message.
-        """
-        pass
-
-    def change_message_status(self, message: dict, status: str, key: str):
-        """
-        Changes the status of a message.
-
-        Args:
-            message (dict): The message to update.
-            status (str): The new status to set.
-            key (str): The key associated with the message.
-        """
-        self.producer_manager.update_message(message, {'status': status}, key)
-
-    def prepare_run_task(self, message: dict, key: str):
-        """
-        Prepares a message for task execution.
-
-        Args:
-            message (dict): The message to prepare.
-            key (str): The key associated with the message.
-        """
-        self.producer_manager.update_message(message, {'worker_id': self.worker_id, 'status': 'started'}, key)
-
-
-class KafkaTaskHandler(TaskHandler):
-    """
-    Concrete class that handles Kafka task processing.
-
-    Methods:
-        process_task(): Processes a Kafka task.
-    """
-
-    def __init__(self, producer_manager: KafkaProducerManager, consumer: Consumer):
-        """
-        Initializes the KafkaTaskHandler with a producer manager and consumer.
-
-        Args:
-            producer_manager (KafkaProducerManager): The manager for handling Kafka producer tasks.
-            consumer (Consumer): The Kafka consumer instance.
-        """
-        super().__init__(producer_manager)
-        self.consumer = consumer
-
-    def process_task(self):
-        """
-        Processes a Kafka task by polling the consumer and executing the task.
-        """
-        self.consumer.subscribe([self.producer_manager.topic_name])
-        while True:
-            msg = self.consumer.poll(timeout=1.0)
-            if msg is None:
-                continue
-            if msg.error():
-                self._handle_error(msg)
-            else:
-                message = json.loads(msg.value())
-                self.prepare_run_task(message, msg.key())
-                # Implement task running logic here
-                break
-
-        self.consumer.close()
-
-    def _handle_error(self, msg):
-        """
-        Handles errors during Kafka message processing.
-
-        Args:
-            msg (Message): The Kafka message that encountered an error.
-        """
-        if msg.error().code() == KafkaError._PARTITION_EOF:
-            sys.stderr.write(f'%% {msg.topic()} [{msg.partition()}] reached end at offset {msg.offset()}\n')
-        else:
-            raise KafkaException(msg.error())
 
 
 class KafkaHeartbeatManager:
@@ -289,7 +215,6 @@ class KafkaHeartbeatManager:
         self.worker_id = worker_id
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=False)
         self.status_check_thread = threading.Thread(target=self._status_check_loop, daemon=False)
-        self._start_threads()
 
     def _send_heartbeat(self):
         """
@@ -332,7 +257,7 @@ class KafkaHeartbeatManager:
             else:
                 worker_id = json.loads(msg.value()).get("worker_id")
                 if worker_id:
-                    self.worker_heartbeats[worker_id] = msg.timestamp()[1]/1e3
+                    self.worker_heartbeats[worker_id] = msg.timestamp()[1] / 1e3
 
     def _status_check_loop(self):
         """
@@ -357,37 +282,81 @@ class KafkaHeartbeatManager:
         for worker_id in inactive_workers:
             print(f"Worker {worker_id} is inactive.")
 
-    def _start_threads(self):
+
+class KafkaWorker:
+    def __init__(self, worker_id: str, config):
+        self.heartbeat_manager = KafkaHeartbeatManager(producer_manager=heartbeat_producer_manager,
+                                                       worker_id=worker_id,
+                                                       heartbeat_consumer=self.create_kafka_consumer())
+        self._start_heartbeat()
+        self.producer_manager = producer_manager
+        self.worker_id = str(uuid.uuid4())
+        self.consumer = self.create_kafka_consumer()
+        self.config = config
+
+    def create_kafka_consumer(self):
+        conf = self.config.copy()
+        conf.update({
+            'group.id': group_id,
+            'auto.offset.reset': 'earliest',
+            'enable.auto.commit': False
+        })
+        return Consumer(conf)
+
+    def change_message_status(self, message: dict, status: str, key: str):
+
+        self.producer_manager.update_message(message, {'status': status}, key)
+
+    def prepare_run_task(self, message: dict, key: str):
+
+        self.producer_manager.update_message(message, {'worker_id': self.worker_id, 'status': 'started'}, key)
+
+    def start(self):
+        config = self._kafka_config()
+        topic_name = 'task_flux_compacted'
+        heartbeat_topic_name = 'task_flux_heartbeat'
+
+        producer_manager = KafkaProducerManager(producer, topic_name)
+        heartbeat_producer_manager = KafkaProducerManager(producer, heartbeat_topic_name)
+
+        worker_consumer = KafkaFactory.create_consumer(config, 'task_flux_worker')
+        heartbeat_consumer = KafkaFactory.create_consumer(config, 'task_flux_heartbeat')
+
+    def _start_heartbeat(self):
+        if not self.heartbeat_manager.heartbeat_thread.is_alive():
+            self.heartbeat_manager.heartbeat_thread.start()
+
+    def process_task(self):
         """
-        Starts the heartbeat and status check threads.
+        Processes a Kafka task by polling the consumer and executing the task.
         """
-        print("start threads")
-        if not self.heartbeat_thread.is_alive():
-            self.heartbeat_thread.start()
-        if not self.status_check_thread.is_alive():
-            self.status_check_thread.start()
+        self.consumer.subscribe([self.producer_manager.topic_name])
+        while True:
+            msg = self.consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                self._handle_error(msg)
+            else:
+                message = json.loads(msg.value())
+                self.prepare_run_task(message, msg.key())
+                # Implement task running logic here
+                break
+
+        self.consumer.close()
+
+    def _handle_error(self, msg):
+        """
+        Handles errors during Kafka message processing.
+
+        Args:
+            msg (Message): The Kafka message that encountered an error.
+        """
+        if msg.error().code() == KafkaError._PARTITION_EOF:
+            sys.stderr.write(f'%% {msg.topic()} [{msg.partition()}] reached end at offset {msg.offset()}\n')
+        else:
+            raise KafkaException(msg.error())
 
 
 if __name__ == "__main__":
     from config import env_config
-
-    config = {'bootstrap.servers': env_config.BROKER_URL}
-    topic_name = 'task_flux_compacted'
-    heartbeat_topic_name = 'task_flux_heartbeat'
-
-    topic_manager = KafkaTopicManager(config)
-    topic_manager.create_topic_if_not_exists(topic_name)
-    topic_manager.create_topic_if_not_exists(heartbeat_topic_name)
-
-    producer = KafkaFactory.create_producer(config)
-    producer_manager = KafkaProducerManager(producer, topic_name)
-    heartbeat_producer_manager = KafkaProducerManager(producer, heartbeat_topic_name)
-
-    worker_consumer = KafkaFactory.create_consumer(config, 'task_flux_worker')
-    heartbeat_consumer = KafkaFactory.create_consumer(config, 'task_flux_heartbeat')
-    task_handler = KafkaTaskHandler(producer_manager=producer_manager, consumer=worker_consumer)
-    # task_handler.process_task()
-    print("abbas")
-    heartbeat_manager = KafkaHeartbeatManager(producer_manager=heartbeat_producer_manager,
-                                              worker_id=task_handler.worker_id, heartbeat_consumer=heartbeat_consumer)
-    print("heeeeeyyyyyy")
